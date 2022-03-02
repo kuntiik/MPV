@@ -5,23 +5,26 @@ import torch.nn.functional as F
 import typing
 
 
-def get_gausskernel_size(sigma, force_odd = True):
+def get_gausskernel_size(sigma, force_odd=True):
     ksize = 2 * math.ceil(sigma * 3.0) + 1
-    if ksize % 2  == 0 and force_odd:
-        ksize +=1
+    if ksize % 2 == 0 and force_odd:
+        ksize += 1
     return int(ksize)
 
 
-def gaussian1d(x: torch.Tensor, sigma: float) -> torch.Tensor: 
-    '''Function that computes values of a (1D) Gaussian with zero mean and variance sigma^2'''
-    out =  torch.zeros(x.shape)
-    return out
+def gaussian1d(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Function that computes values of a (1D) Gaussian with zero mean and variance sigma^2"""
+    # out =  torch.zeros(x.shape)
+    return np.exp(-np.square(x) / (np.square(sigma) * 2)) / (np.sqrt(2 * np.pi) * sigma)
+    # return out
 
 
-def gaussian_deriv1d(x: torch.Tensor, sigma: float) -> torch.Tensor:  
-    '''Function that computes values of a (1D) Gaussian derivative'''
-    out =  torch.zeros(x.shape)
-    return out
+def gaussian_deriv1d(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Function that computes values of a (1D) Gaussian derivative"""
+    # out =  torch.zeros(x.shape)
+    return np.multiply(-x / np.square(sigma), gaussian1d(x, sigma))
+    # return out
+
 
 def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     """Function that convolves a tensor with a kernel.
@@ -40,9 +43,20 @@ def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
         torch.Tensor: the convolved tensor of same size and numbers of channels
         as the input.
     """
-    out =  x
-    out =  x
-    return out
+    # TODO can be rectangular
+
+    # pad_shape = np.ones((1, 4)) * np.ceil(kernel.size(dim=0) / 2)
+    # pad_shape = pad_shape.flatten().astype(int)
+    pad_shape = (
+        np.ceil(kernel.size(dim=1) / 2).astype(int),
+        np.ceil(kernel.size(dim=1) / 2).astype(int),
+        np.ceil(kernel.size(dim=0) / 2).astype(int),
+        np.ceil(kernel.size(dim=0) / 2).astype(int),
+    )
+    out = F.pad(x, tuple(pad_shape), "reflect",)
+    kernel_view = kernel.view(*out.shape[:-2], *kernel.shape)
+    return F.conv2d(out, kernel_view)
+
 
 def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
     r"""Function that blurs a tensor using a Gaussian filter.
@@ -57,9 +71,13 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
         - Input: :math:`(B, C, H, W)`
         - Output: :math:`(B, C, H, W)`
 
-    """ 
+    """
     ksize = get_gausskernel_size(sigma)
-    out =  x
+    k_ones = np.ones([1, ksize])
+    x_kernel = gaussian1d(k_ones, sigma=sigma)
+    y_kernel = x_kernel.T
+    out = filter2d(x, x_kernel)
+    out = filter2d(out, y_kernel)
     return out
 
 
@@ -76,7 +94,7 @@ def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
     """
     b, c, h, w = x.shape
     ksize = get_gausskernel_size(sigma)
-    out =  torch.zeros(b,c,2,h,w)
+    out = torch.zeros(b, c, 2, h, w)
     return out
 
 
@@ -93,8 +111,9 @@ def spatial_gradient_second_order(x: torch.Tensor, sigma: float) -> torch.Tensor
     """
     b, c, h, w = x.shape
     ksize = get_gausskernel_size(sigma)
-    out =  torch.zeros(b,c,3,h,w)
+    out = torch.zeros(b, c, 3, h, w)
     return out
+
 
 def affine(center: torch.Tensor, unitx: torch.Tensor, unity: torch.Tensor) -> torch.Tensor:
     r"""Computes transformation matrix A which transforms point in homogeneous coordinates from canonical coordinate system into image
@@ -110,14 +129,13 @@ def affine(center: torch.Tensor, unitx: torch.Tensor, unity: torch.Tensor) -> to
     assert center.size(0) == unitx.size(0)
     assert center.size(0) == unity.size(0)
     B = center.size(0)
-    out =  torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
+    out = torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
     return out
 
-def extract_affine_patches(input: torch.Tensor,
-                           A: torch.Tensor,
-                           img_idxs: torch.Tensor,
-                           PS: int = 32,
-                           ext: float = 6.0):
+
+def extract_affine_patches(
+    input: torch.Tensor, A: torch.Tensor, img_idxs: torch.Tensor, PS: int = 32, ext: float = 6.0
+):
     """Extract patches defined by affine transformations A from image tensor X.
     
     Args:
@@ -130,21 +148,19 @@ def extract_affine_patches(input: torch.Tensor,
     Returns:
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
     """
-    b,ch,h,w = input.size()
+    b, ch, h, w = input.size()
     num_patches = A.size(0)
     # Functions, which might be useful: torch.meshgrid, torch.nn.functional.grid_sample
     # You are not allowed to use function torch.nn.functional.affine_grid
     # Note, that F.grid_sample expects coordinates in a range from -1 to 1
     # where (-1, -1) - topleft, (1,1) - bottomright and (0,0) center of the image
-    out =  torch.zeros(num_patches, ch, PS, PS)
+    out = torch.zeros(num_patches, ch, PS, PS)
     return out
 
 
-def extract_antializased_affine_patches(input: torch.Tensor,
-                           A: torch.Tensor,
-                           img_idxs: torch.Tensor,
-                           PS: int = 32,
-                           ext: float = 6.0):
+def extract_antializased_affine_patches(
+    input: torch.Tensor, A: torch.Tensor, img_idxs: torch.Tensor, PS: int = 32, ext: float = 6.0
+):
     """Extract patches defined by affine transformations A from scale pyramid created image tensor X.
     It runs your implementation of the `extract_affine_patches` function, so it would not work w/o it.
     
@@ -159,9 +175,10 @@ def extract_antializased_affine_patches(input: torch.Tensor,
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
     """
     import kornia
-    b,ch,h,w = input.size()
+
+    b, ch, h, w = input.size()
     num_patches = A.size(0)
-    scale = (kornia.feature.get_laf_scale(ext * A.unsqueeze(0)[:,:,:2,:]) / float(PS))[0]
+    scale = (kornia.feature.get_laf_scale(ext * A.unsqueeze(0)[:, :, :2, :]) / float(PS))[0]
     half: float = 0.5
     pyr_idx = (scale.log2()).relu().long()
     cur_img = input
@@ -173,11 +190,8 @@ def extract_antializased_affine_patches(input: torch.Tensor,
         if (scale_mask.float().sum()) >= 0:
             scale_mask = (scale_mask > 0).view(-1)
             current_A = A[scale_mask]
-            current_A[:, :2, :3] *= (float(h_cur)/float(h))
-            patches = extract_affine_patches(cur_img,
-                                 current_A, 
-                                 img_idxs[scale_mask],
-                                 PS, ext)
+            current_A[:, :2, :3] *= float(h_cur) / float(h)
+            patches = extract_affine_patches(cur_img, current_A, img_idxs[scale_mask], PS, ext)
             out.masked_scatter_(scale_mask.view(-1, 1, 1, 1), patches)
         cur_img = kornia.geometry.pyrdown(cur_img)
         cur_pyr_level += 1
