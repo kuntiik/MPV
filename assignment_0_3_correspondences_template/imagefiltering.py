@@ -1,3 +1,4 @@
+from tokenize import group
 import numpy as np
 import math
 import torch
@@ -45,17 +46,17 @@ def filter2d(x: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     """
     # TODO can be rectangular
 
-    # pad_shape = np.ones((1, 4)) * np.ceil(kernel.size(dim=0) / 2)
-    # pad_shape = pad_shape.flatten().astype(int)
+    pad_shape = np.ones((1, 4)) * np.ceil(kernel.size(dim=0) / 2)
+    pad_shape = pad_shape.flatten().astype(int)
     pad_shape = (
-        np.ceil(kernel.size(dim=1) / 2).astype(int),
-        np.ceil(kernel.size(dim=1) / 2).astype(int),
-        np.ceil(kernel.size(dim=0) / 2).astype(int),
-        np.ceil(kernel.size(dim=0) / 2).astype(int),
+        kernel.size(dim=1) // 2,
+        kernel.size(dim=1) // 2,
+        kernel.size(dim=0) // 2,
+        kernel.size(dim=0) // 2,
     )
-    out = F.pad(x, tuple(pad_shape), "reflect",)
-    kernel_view = kernel.view(*out.shape[:-2], *kernel.shape)
-    return F.conv2d(out, kernel_view)
+    out = F.pad(x, tuple(pad_shape), "replicate",)
+    kernel = kernel.unsqueeze(0).unsqueeze(0).repeat((x.size(1), 1, 1, 1))
+    return F.conv2d(input=out, weight=kernel, groups=x.size(1))
 
 
 def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -63,7 +64,7 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     Arguments:
         sigma (Tuple[float, float]): the standard deviation of the kernel.
-        
+
     Returns:
         Tensor: the blurred tensor.
 
@@ -73,12 +74,29 @@ def gaussian_filter2d(x: torch.Tensor, sigma: float) -> torch.Tensor:
 
     """
     ksize = get_gausskernel_size(sigma)
-    k_ones = np.ones([1, ksize])
-    x_kernel = gaussian1d(k_ones, sigma=sigma)
+    # k_ones = np.ones((1, ksize))
+    k_ones = torch.linspace(-(ksize - 1) / 2, (ksize - 1) / 2, ksize).unsqueeze(0)
+    x_kernel = torch.tensor(gaussian1d(k_ones, sigma=sigma))
     y_kernel = x_kernel.T
     out = filter2d(x, x_kernel)
     out = filter2d(out, y_kernel)
     return out
+
+
+def x_derivative_spatial(grid, x, sigma):
+    x_kernel = torch.tensor(gaussian_deriv1d(grid, sigma=sigma))
+    y_kernel = torch.tensor(gaussian1d(grid, sigma=sigma)).T
+    x_grad_tmp = filter2d(x, x_kernel)
+    x_grad = filter2d(x_grad_tmp, y_kernel)
+    return x_grad
+
+
+def y_derivative_spatial(grid, x, sigma):
+    y_kernel = torch.tensor(gaussian_deriv1d(grid, sigma=sigma)).T
+    x_kernel = torch.tensor(gaussian1d(grid, sigma=sigma))
+    y_grad_tmp = filter2d(x, x_kernel)
+    y_grad = filter2d(y_grad_tmp, y_kernel)
+    return y_grad
 
 
 def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
@@ -94,7 +112,23 @@ def spatial_gradient_first_order(x: torch.Tensor, sigma: float) -> torch.Tensor:
     """
     b, c, h, w = x.shape
     ksize = get_gausskernel_size(sigma)
-    out = torch.zeros(b, c, 2, h, w)
+
+    grid = torch.linspace(-(ksize - 1) / 2, (ksize - 1) / 2, ksize).unsqueeze(0)
+    # x_kernel = torch.tensor(gaussian_deriv1d(grid, sigma=sigma))
+    # y_kernel = torch.tensor(gaussian1d(grid, sigma=sigma)).T
+    # x_grad = filter2d(x, x_kernel)
+    # x_grad = filter2d(x_grad, y_kernel)
+    # # y_kernel2 = x_kernel
+    # x_kernel = torch.tensor(gaussian1d(grid, sigma=sigma))
+    # y_kernel = torch.tensor(gaussian_deriv1d(grid, sigma=sigma)).T
+    # y_grad = filter2d(x, y_kernel)
+    # y_grad = filter2d(y_grad, x_kernel)
+
+    x_grad = x_derivative_spatial(grid, x, sigma)
+    y_grad = y_derivative_spatial(grid, x, sigma)
+    out = torch.stack([x_grad, y_grad], 2)
+
+    # out = torch.zeros(b, c, 2, h, w)
     return out
 
 
@@ -109,9 +143,17 @@ def spatial_gradient_second_order(x: torch.Tensor, sigma: float) -> torch.Tensor
         - Output: :math:`(B, C, 3, H, W)`
 
     """
-    b, c, h, w = x.shape
+    xd = torch.tensor([[0.5, 0, -0.5]]).float()
+
     ksize = get_gausskernel_size(sigma)
-    out = torch.zeros(b, c, 3, h, w)
+    grid = torch.linspace(-(ksize - 1) / 2, (ksize - 1) / 2, ksize).unsqueeze(0)
+    x_grad = x_derivative_spatial(grid, x, sigma)
+    y_grad = y_derivative_spatial(grid, x, sigma)
+    xx_grad = filter2d(x_grad, xd)
+    xy_grad = filter2d(x_grad, xd.T)
+    yy_grad = filter2d(y_grad, xd.T)
+
+    out = torch.stack([xx_grad, xy_grad, yy_grad], 2)
     return out
 
 
@@ -122,40 +164,71 @@ def affine(center: torch.Tensor, unitx: torch.Tensor, unity: torch.Tensor) -> to
         torch.Tensor: affine tranformation matrix
 
     Shape:
-        - Input :math:`(B, 2)`, :math:`(B, 2)`, :math:`(B, 2)` 
+        - Input :math:`(B, 2)`, :math:`(B, 2)`, :math:`(B, 2)`
         - Output: :math:`(B, 3, 3)`
 
     """
     assert center.size(0) == unitx.size(0)
     assert center.size(0) == unity.size(0)
     B = center.size(0)
-    out = torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
-    return out
+    coords = torch.tensor([[0, 1, 0], [0, 0, 1], [1, 1, 1]])
+    # coords = coords.unsqueeze(0).repeat(B, 1, 1)
+    p = torch.stack([center, unitx, unity], 2)
+    o = torch.ones((B, 1, 3))
+    p = torch.cat((p, o), 1)
+    print(p.shape)
+    print(o.shape)
+
+    t = np.dot(p, np.linalg.inv(coords))
+    # out = torch.eye(3).unsqueeze(0).repeat(B, 1, 1)
+    return torch.tensor(t).float()
 
 
 def extract_affine_patches(
     input: torch.Tensor, A: torch.Tensor, img_idxs: torch.Tensor, PS: int = 32, ext: float = 6.0
 ):
     """Extract patches defined by affine transformations A from image tensor X.
-    
+
     Args:
         input: (torch.Tensor) images, :math:`(B, CH, H, W)`
         A: (torch.Tensor). :math:`(N, 3, 3)`
         img_idxs: (torch.Tensor). :math:`(N, 1)` indexes of image in batch, where patch belongs to
         PS: (int) output patch size in pixels, default = 32
-        ext (float): output patch size in unit vectors. 
+        ext (float): output patch size in unit vectors.
 
     Returns:
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
     """
     b, ch, h, w = input.size()
     num_patches = A.size(0)
-    # Functions, which might be useful: torch.meshgrid, torch.nn.functional.grid_sample
-    # You are not allowed to use function torch.nn.functional.affine_grid
-    # Note, that F.grid_sample expects coordinates in a range from -1 to 1
-    # where (-1, -1) - topleft, (1,1) - bottomright and (0,0) center of the image
-    out = torch.zeros(num_patches, ch, PS, PS)
-    return out
+
+    foo = torch.linspace(-ext, ext, PS)
+    yy, xx = torch.meshgrid(foo, foo)
+    xr = torch.reshape(xx, (-1, PS * PS))
+    yr = torch.reshape(yy, (-1, PS * PS))
+    zr = torch.ones_like(xr)
+    pts = torch.cat([xr, yr, zr], 0)
+    # A[:, 0, :] /= w
+    # A[:, 1, :] /= h
+
+    pts_t = torch.matmul(A, pts)
+    pts_t[:, 0, :] = pts_t[:, 0, :] * 2 / w - 1.0
+    pts_t[:, 1, :] = pts_t[:, 1, :] * 2 / h - 1.0
+    pts_resh = torch.reshape(pts_t, (-1, 3, PS, PS))[:, 0:2, ...]
+    pts_perm = pts_resh.permute((0, 2, 3, 1))  #!!
+    out = [
+        F.grid_sample(
+            input[img_idxs[i]].unsqueeze(0).float(), pts_perm[i, ...].unsqueeze(0).float()
+        )
+        for i in range(num_patches)
+    ]
+    if len(out) > 0:
+        return torch.cat(out, 0)
+    else:
+        return torch.tensor([]).float()
+
+    # return out.double()
+    # return out
 
 
 def extract_antializased_affine_patches(
@@ -163,13 +236,13 @@ def extract_antializased_affine_patches(
 ):
     """Extract patches defined by affine transformations A from scale pyramid created image tensor X.
     It runs your implementation of the `extract_affine_patches` function, so it would not work w/o it.
-    
+
     Args:
         input: (torch.Tensor) images, :math:`(B, CH, H, W)`
         A: (torch.Tensor). :math:`(N, 3, 3)`
         img_idxs: (torch.Tensor). :math:`(N, 1)` indexes of image in batch, where patch belongs to
         PS: (int) output patch size in pixels, default = 32
-        ext (float): output patch size in unit vectors. 
+        ext (float): output patch size in unit vectors.
 
     Returns:
         patches: (torch.Tensor) :math:`(N, CH, PS,PS)`
