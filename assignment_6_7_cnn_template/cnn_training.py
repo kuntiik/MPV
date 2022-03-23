@@ -12,7 +12,7 @@ import os
 
 # import deepcopkj
 
-# import wandb
+import wandb
 
 from pathlib import Path
 
@@ -105,20 +105,19 @@ def train_and_val_single_epoch(
     # for idx, (data, labels) in tqdm(enumerate(train_loader), total=len(train_loader)):
 
     model, train_loss, train_acc = train_epoch(model, train_loader, optim, loss_fn, device)
-    val_loss, additional_out = validate_epoch(
-        model, val_loader, loss_fn, device, additional_params
-    )
+    val_loss = validate_epoch(model, val_loader, loss_fn, device, additional_params)
     # TODO uncoment for tensorboard
     if writer is not None:
-        writer.add_scalar("Accuracy/train", train_acc, epoch_idx)
-        writer.add_scalar("Accuracy/val", additional_out["acc"], epoch_idx)
+        # writer.add_scalar("Accuracy/train", train_acc, epoch_idx)
+        # writer.add_scalar("Accuracy/val", additional_out["acc"], epoch_idx)
         writer.add_scalar("Loss/val", val_loss, epoch_idx)
         writer.add_scalar("Loss/train", train_loss, epoch_idx)
     # TODO uncoment for wandb logs
     # wandb.log({"Accuracy/train": train_acc.item(), "epoch": epoch_idx}, step=epoch_idx)
     # wandb.log({"Accuracy/val": additional_out["acc"].item()}, step=epoch_idx)
-    # wandb.log({"Loss/train": train_loss}, step=epoch_idx)
-    # wandb.log({"Loss/val": val_loss}, step=epoch_idx)
+    print("train loss", train_loss, "val_loss", val_loss)
+    wandb.log({"Loss/train": train_loss}, step=epoch_idx)
+    wandb.log({"Loss/val": val_loss}, step=epoch_idx)
     return model
 
 
@@ -179,7 +178,7 @@ def train_epoch(
         data = data.to(device)
         labels = labels.to(device)
         preds = model(data)
-        acc += accuracy(preds, labels) * data.size(dim=0)
+        # acc += accuracy(preds, labels) * data.size(dim=0)
         count += data.size(dim=0)
         loss_tmp = loss_fn(preds, labels)
         loss_tmp.backward()
@@ -188,7 +187,7 @@ def train_epoch(
         loss += loss_tmp.item()
 
     loss /= count
-    acc /= count
+    # acc /= count
 
     return model, loss, acc
 
@@ -214,14 +213,14 @@ def validate_epoch(
             data = data.to(device)
             labels = labels.to(device)
             preds = model(data)
-            acc += accuracy(preds, labels) * data.size(dim=0)
+            # acc += accuracy(preds, labels) * data.size(dim=0)
             count += data.size(dim=0)
             loss += loss_fn(preds, labels).item()
         loss /= count
-        acc /= count
-        print("Validation acc : ", acc)
-
-    return loss, {"acc": acc}
+        # acc /= count
+        # print("Validation acc : ", acc)
+    return loss
+    # return loss, {"acc": acc}
 
 
 class TestFolderDataset(torch.utils.data.Dataset):

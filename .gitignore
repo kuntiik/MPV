@@ -12,6 +12,16 @@ __pycache__
 *.exe
 *.o
 
+*.jpg
+*.png
+*.pt
+*.csv
+*.html
+*.tgz*
+imagenette2-160
+runs
+*wandb*
+
 # Logs and databases #
 ######################
 *.log
